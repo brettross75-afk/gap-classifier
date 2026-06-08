@@ -1,0 +1,208 @@
+//@version=6
+indicator("Gap Classifier & Trade Signals", overlay=true,
+     max_labels_count=500, max_lines_count=500, max_boxes_count=200)
+
+// ── INPUTS ────────────────────────────────────────────────────────────────────
+var G_F = "Video Filters"
+i_minGapPct    = input.float(1.0,  "Min Gap %",                    minval=0.1, step=0.1,  group=G_F)
+i_minRelVol    = input.float(1.5,  "Min Relative Volume",          minval=0.5, step=0.1,  group=G_F)
+i_htfLook      = input.int(20,     "HTF Lookback (bars)",          minval=5,              group=G_F)
+i_trendPer     = input.int(50,     "Trend EMA Period",             minval=10,             group=G_F)
+i_resistBuf    = input.float(1.0,  "Resistance Buffer %",          minval=0.0, step=0.1,  group=G_F)
+i_consolidMul  = input.float(0.75, "Tight Prior Day (×ATR)",       minval=0.1, step=0.05, group=G_F)
+i_reqTrend     = input.bool(true,  "Require Trend Alignment",                             group=G_F)
+i_reqTight     = input.bool(true,  "Require Tight Prior Day",                             group=G_F)
+i_blockResist  = input.bool(true,  "Block Longs Into Resistance",                         group=G_F)
+
+var G_C = "Classification"
+i_exhRelVol    = input.float(2.5,  "Exhaustion Min RelVol",        minval=1.0, step=0.1,  group=G_C)
+i_exhATRmul    = input.float(1.5,  "Exhaustion Min ATR Mult",      minval=0.5, step=0.1,  group=G_C)
+i_latePct      = input.float(15.0, "Late Trend Min % from 200EMA", minval=5.0,            group=G_C)
+
+var G_R = "Risk / Reward"
+i_tp1r         = input.float(1.5,  "TP1 (R)",                      minval=0.5, step=0.25, group=G_R)
+i_tp2r         = input.float(3.0,  "TP2 (R)",                      minval=1.0, step=0.5,  group=G_R)
+i_lineLen      = input.int(15,     "Level Line Length (bars)",      minval=3,              group=G_R)
+
+var G_D = "Display"
+i_txtSz        = input.string("Normal", "Text Size",
+     options=["Tiny","Small","Normal","Large","Huge"], group=G_D)
+i_showCommon   = input.bool(false, "Show Common Gap Labels",                              group=G_D)
+i_showFiltered = input.bool(false, "Show Filtered-Out Labels",                            group=G_D)
+i_showZone     = input.bool(true,  "Show Gap Zone Box",                                   group=G_D)
+i_showEMAs     = input.bool(true,  "Show Trend EMAs",                                     group=G_D)
+
+// ── TEXT SIZE ─────────────────────────────────────────────────────────────────
+txtSz = i_txtSz == "Tiny" ? size.tiny : i_txtSz == "Small" ? size.small :
+     i_txtSz == "Large" ? size.large : i_txtSz == "Huge" ? size.huge : size.normal
+
+// ── SERIES ────────────────────────────────────────────────────────────────────
+ema50   = ta.ema(close, i_trendPer)
+ema200  = ta.ema(close, 200)
+atr14   = ta.atr(14)
+avgVol  = ta.sma(volume, 20)
+
+// ── GAP METRICS ───────────────────────────────────────────────────────────────
+isGapUp   = open > close[1]
+isGapDown = open < close[1]
+isGap     = isGapUp or isGapDown
+gapAmt    = math.abs(open - close[1])
+gapPct    = gapAmt / close[1] * 100
+prevATR   = math.max(nz(atr14[1], atr14), 0.001)
+gapVsATR  = gapAmt / prevATR
+prevVol   = math.max(nz(avgVol[1], avgVol), 1.0)
+relVol    = volume / prevVol
+
+// ── PRE-FILTERS (video's 5 gates) ─────────────────────────────────────────────
+// 1. Trend alignment: gap direction must match the stock's trend
+trendOK = not i_reqTrend or
+     (isGapUp   and close[1] > ema50[1]) or
+     (isGapDown and close[1] < ema50[1])
+
+// 2. Relative volume: institutional interest present
+volOK  = relVol  >= i_minRelVol
+
+// 3. Gap size: catalyst proxy (small gaps have no edge)
+sizeOK = gapPct  >= i_minGapPct
+
+// 4. HTF resistance: veto longs that gap into a recent swing high
+prevHigh   = ta.highest(high, i_htfLook)[1]
+intoResist = isGapUp and open >= prevHigh * (1 - i_resistBuf / 100)
+resistOK   = not i_blockResist or isGapDown or not intoResist
+
+// 5. Prior day tightness: pre-market consolidation proxy
+priorRange = nz(high[1], high) - nz(low[1], low)
+tightOK    = not i_reqTight or priorRange <= prevATR * i_consolidMul
+
+passFilter = isGap and sizeOK and volOK and trendOK and resistOK and tightOK
+
+// ── CLASSIFICATION ────────────────────────────────────────────────────────────
+distFrom200  = math.abs(close[1] - ema200[1]) / math.max(ema200[1], 0.001) * 100
+structHigh   = ta.highest(high, i_htfLook)[1]
+structLow    = ta.lowest(low,   i_htfLook)[1]
+breaksStruct = (isGapUp and open > structHigh) or (isGapDown and open < structLow)
+
+barRange    = math.max(high - low, 0.001)
+closePct    = (close - low) / barRange  // 0 = closed at low, 1 = closed at high
+strongClose = closePct >= 0.60           // bullish follow-through on gap day
+weakClose   = closePct <= 0.40           // bearish reversal on gap day
+
+// Priority: Exhaustion → Breakaway → Runaway → Common
+isExhaustion = passFilter and (relVol >= i_exhRelVol or gapVsATR >= i_exhATRmul) and distFrom200 >= i_latePct
+isBreakaway  = passFilter and not isExhaustion and breaksStruct
+isRunaway    = passFilter and not isExhaustion and not isBreakaway
+isCommon     = isGap and not isExhaustion and not isBreakaway and not isRunaway
+
+// ── ENTRY SIGNALS (confirmed by close-of-gap-day candle quality) ──────────────
+longBreakaway  = isBreakaway  and isGapUp   and strongClose
+longRunaway    = isRunaway    and isGapUp   and strongClose
+longExhaust    = isExhaustion and isGapDown and strongClose  // bounce: gap-down exhaustion
+
+shortBreakaway = isBreakaway  and isGapDown and weakClose
+shortRunaway   = isRunaway    and isGapDown and weakClose
+shortExhaust   = isExhaustion and isGapUp   and weakClose   // fade: gap-up exhaustion
+
+anyLong  = longBreakaway  or longRunaway  or longExhaust
+anyShort = shortBreakaway or shortRunaway or shortExhaust
+
+// ── STOP & TARGET LEVELS ──────────────────────────────────────────────────────
+// Long: stop at gap low (prior close), or exhaustion bar low for bounce setups
+stopLong  = isExhaustion ? low   : close[1]
+entryLong = close
+riskLong  = math.max(entryLong - stopLong, 0.001)
+tp1Long   = entryLong + riskLong * i_tp1r
+tp2Long   = entryLong + riskLong * i_tp2r
+
+// Short: stop at gap high (prior close), or exhaustion bar high for fade setups
+stopShort  = isExhaustion ? high : close[1]
+entryShort = close
+riskShort  = math.max(stopShort - entryShort, 0.001)
+tp1Short   = entryShort - riskShort * i_tp1r
+tp2Short   = entryShort - riskShort * i_tp2r
+
+// ── UDFs ──────────────────────────────────────────────────────────────────────
+drawLevels(entry, stp, tp1, tp2, col) =>
+    x2 = bar_index + i_lineLen
+    line.new(bar_index, entry, x2, entry, color=color.gray,  style=line.style_dotted, width=1)
+    line.new(bar_index, stp,   x2, stp,   color=color.red,   style=line.style_dashed, width=1)
+    line.new(bar_index, tp1,   x2, tp1,   color=col,         style=line.style_solid,  width=1)
+    line.new(bar_index, tp2,   x2, tp2,   color=col,         style=line.style_solid,  width=2)
+
+buildLabel(gType, isLong, entry, stp, tp1, tp2, bgCol) =>
+    stopLbl = isLong ? "Stop (gap low):  " : "Stop (gap high): "
+    txt = gType + (isLong ? " | LONG ↑" : " | SHORT ↓") + "\n" +
+          "Entry:  " + str.tostring(entry, "#.##") + "\n" +
+          stopLbl   + str.tostring(stp,   "#.##") + "\n" +
+          "TP1 (" + str.tostring(i_tp1r, "#.#") + "R):  " + str.tostring(tp1, "#.##") + "\n" +
+          "TP2 (" + str.tostring(i_tp2r, "#.#") + "R):  " + str.tostring(tp2, "#.##") + "\n" +
+          "RelVol: " + str.tostring(relVol, "#.##") + "×   Gap: " + str.tostring(gapPct, "#.##") + "%"
+    yPos = isLong ? low  : high
+    styl = isLong ? label.style_label_up : label.style_label_down
+    label.new(bar_index, yPos, text=txt, style=styl, color=bgCol, textcolor=color.white, size=txtSz)
+
+drawZone(isBullish) =>
+    col  = isBullish ? color.new(color.green, 85) : color.new(color.red, 85)
+    bCol = isBullish ? color.new(color.green, 50) : color.new(color.red, 50)
+    box.new(bar_index - 1, math.max(open, close[1]),
+            bar_index + i_lineLen, math.min(open, close[1]),
+            bgcolor=col, border_color=bCol)
+
+// ── RENDER ────────────────────────────────────────────────────────────────────
+if longBreakaway
+    drawLevels(entryLong, stopLong, tp1Long, tp2Long, color.lime)
+    buildLabel("BREAKAWAY", true, entryLong, stopLong, tp1Long, tp2Long, color.new(color.green, 15))
+    if i_showZone
+        drawZone(true)
+
+if longRunaway
+    drawLevels(entryLong, stopLong, tp1Long, tp2Long, color.teal)
+    buildLabel("RUNAWAY", true, entryLong, stopLong, tp1Long, tp2Long, color.new(color.teal, 15))
+    if i_showZone
+        drawZone(true)
+
+if longExhaust
+    drawLevels(entryLong, stopLong, tp1Long, tp2Long, color.orange)
+    buildLabel("EXHAUSTION FADE ↑", true, entryLong, stopLong, tp1Long, tp2Long, color.new(color.orange, 15))
+    if i_showZone
+        drawZone(true)
+
+if shortBreakaway
+    drawLevels(entryShort, stopShort, tp1Short, tp2Short, color.maroon)
+    buildLabel("BREAKAWAY", false, entryShort, stopShort, tp1Short, tp2Short, color.new(color.maroon, 15))
+    if i_showZone
+        drawZone(false)
+
+if shortRunaway
+    drawLevels(entryShort, stopShort, tp1Short, tp2Short, color.purple)
+    buildLabel("RUNAWAY", false, entryShort, stopShort, tp1Short, tp2Short, color.new(color.purple, 15))
+    if i_showZone
+        drawZone(false)
+
+if shortExhaust
+    drawLevels(entryShort, stopShort, tp1Short, tp2Short, color.red)
+    buildLabel("EXHAUSTION FADE ↓", false, entryShort, stopShort, tp1Short, tp2Short, color.new(color.red, 15))
+    if i_showZone
+        drawZone(false)
+
+if isCommon and isGapUp and i_showCommon
+    label.new(bar_index, high, "COMMON ↑\nFade → prior close",
+         style=label.style_label_down, color=color.gray, textcolor=color.white, size=txtSz)
+
+if isCommon and isGapDown and i_showCommon
+    label.new(bar_index, low, "COMMON ↓\nFade → prior close",
+         style=label.style_label_up, color=color.gray, textcolor=color.white, size=txtSz)
+
+if i_showFiltered and isGap and sizeOK and volOK and not passFilter
+    reason = not trendOK ? "(trend)" : not resistOK ? "(resist)" : not tightOK ? "(not tight)" : "(other)"
+    yPos   = isGapUp ? high : low
+    styl   = isGapUp ? label.style_label_down : label.style_label_up
+    label.new(bar_index, yPos, "FILTERED\n" + reason,
+         style=styl, color=color.new(color.gray, 50), textcolor=color.white, size=size.tiny)
+
+// ── PLOTSHAPES ────────────────────────────────────────────────────────────────
+plotshape(anyLong,  title="Long Entry",  style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.normal)
+plotshape(anyShort, title="Short Entry", style=shape.triangledown, location=location.abovebar, color=color.red,  size=size.normal)
+
+// ── EMA PLOTS ─────────────────────────────────────────────────────────────────
+plot(i_showEMAs ? ema50  : na, title="Trend EMA",  color=color.new(color.orange, 30), linewidth=1)
+plot(i_showEMAs ? ema200 : na, title="EMA 200",    color=color.new(color.blue,   30), linewidth=1)
