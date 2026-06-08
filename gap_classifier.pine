@@ -25,16 +25,14 @@ i_tp2r         = input.float(3.0,  "TP2 (R)",                      minval=1.0, s
 i_lineLen      = input.int(15,     "Level Line Length (bars)",      minval=3,              group=G_R)
 
 var G_D = "Display"
-i_txtSz        = input.string("Normal", "Text Size",
-     options=["Tiny","Small","Normal","Large","Huge"], group=G_D)
+txt_sz_str     = input.string("Normal", "Text Size", options=["Tiny","Small","Normal","Large","Huge"], group=G_D)
 i_showCommon   = input.bool(false, "Show Common Gap Labels",                              group=G_D)
 i_showFiltered = input.bool(false, "Show Filtered-Out Labels",                            group=G_D)
 i_showZone     = input.bool(true,  "Show Gap Zone Box",                                   group=G_D)
 i_showEMAs     = input.bool(true,  "Show Trend EMAs",                                     group=G_D)
 
 // ── TEXT SIZE ─────────────────────────────────────────────────────────────────
-txtSz = i_txtSz == "Tiny" ? size.tiny : i_txtSz == "Small" ? size.small :
-     i_txtSz == "Large" ? size.large : i_txtSz == "Huge" ? size.huge : size.normal
+string txt_sz = txt_sz_str == "Tiny" ? size.tiny : txt_sz_str == "Small" ? size.small : txt_sz_str == "Large" ? size.large : txt_sz_str == "Huge" ? size.huge : size.normal
 
 // ── SERIES ────────────────────────────────────────────────────────────────────
 ema50   = ta.ema(close, i_trendPer)
@@ -138,7 +136,7 @@ buildLabel(gType, isLong, entry, stp, tp1, tp2, bgCol) =>
           "RelVol: " + str.tostring(relVol, "#.##") + "×   Gap: " + str.tostring(gapPct, "#.##") + "%"
     yPos = isLong ? low  : high
     styl = isLong ? label.style_label_up : label.style_label_down
-    label.new(bar_index, yPos, text=txt, style=styl, color=bgCol, textcolor=color.white, size=txtSz)
+    label.new(bar_index, yPos, text=txt, style=styl, color=bgCol, textcolor=color.white, size=txt_sz)
 
 drawZone(isBullish) =>
     col  = isBullish ? color.new(color.green, 85) : color.new(color.red, 85)
@@ -186,18 +184,18 @@ if shortExhaust
 
 if isCommon and isGapUp and i_showCommon
     label.new(bar_index, high, "COMMON ↑\nFade → prior close",
-         style=label.style_label_down, color=color.gray, textcolor=color.white, size=txtSz)
+         style=label.style_label_down, color=color.gray, textcolor=color.white, size=txt_sz)
 
 if isCommon and isGapDown and i_showCommon
     label.new(bar_index, low, "COMMON ↓\nFade → prior close",
-         style=label.style_label_up, color=color.gray, textcolor=color.white, size=txtSz)
+         style=label.style_label_up, color=color.gray, textcolor=color.white, size=txt_sz)
 
 if i_showFiltered and isGap and sizeOK and volOK and not passFilter
     reason = not trendOK ? "(trend)" : not resistOK ? "(resist)" : not tightOK ? "(not tight)" : "(other)"
     yPos   = isGapUp ? high : low
     styl   = isGapUp ? label.style_label_down : label.style_label_up
     label.new(bar_index, yPos, "FILTERED\n" + reason,
-         style=styl, color=color.new(color.gray, 50), textcolor=color.white, size=size.tiny)
+         style=styl, color=color.new(color.gray, 50), textcolor=color.white, size=txt_sz)
 
 // ── PLOTSHAPES ────────────────────────────────────────────────────────────────
 plotshape(anyLong,  title="Long Entry",  style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.normal)
